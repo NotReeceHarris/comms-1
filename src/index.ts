@@ -1,5 +1,6 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { params, getCurrentTime } from './lib';
+import { encryptRSA, decryptRSA, generateRSAKeyPair } from './encryption';
 import * as readline from 'readline';
 
 const { target, port } = params(process.argv);
@@ -12,17 +13,59 @@ if (!target || !port) {
 const server = new WebSocketServer({ port: parseInt(port) });
 let rl: readline.Interface;
 
-server.on('error', () => { });
+let privateKey: string;
+let publicKey: string;
+let targetPublicKey: string;
+
+process.stdout.clearLine(0);
+process.stdout.cursorTo(0);
+process.stdout.write('┌────────────────────────┐\n│ Waiting for connection │\n└────────────────────────┘\n');
+
+let sentHandshake = false;
+
+server.on('error', ()=>{});
 server.on('connection', (ws) => {
-    console.log('Client connected');
+
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client connected\x1b[0m\n`);
+
+    if (rl) {
+        process.stdout.write(`\x1b[A\x1b[34m> \x1b[0m`);
+        process.stdout.cursorTo(2);
+    }
 
     ws.on('message', (message) => {
+
+        if (!sentHandshake) {
+            if (message.toString().startsWith('-----BEGIN PUBLIC KEY-----')) {
+                targetPublicKey = message.toString();
+                sentHandshake = true;
+
+                process.stdout.clearLine(0);
+                process.stdout.cursorTo(0);
+                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client Sent Public Key\x1b[0m\n`);
+
+                process.stdout.write(`\x1b[34m> \x1b[0m`);
+                process.stdout.cursorTo(2);
+                return
+            }
+        }
+
         process.stdout.clearLine(0);
         process.stdout.cursorTo(0);
-        process.stdout.write(`\x1b[32m[${getCurrentTime()}] Alice > \x1b[0m${message.toString()}\n`);
+        process.stdout.write(`\x1b[32m[${getCurrentTime()}] Alice > \x1b[0m${decryptRSA(privateKey, message.toString())}\n`);
+        process.stdout.write(`\x1b[34m> \x1b[0m${rl !== undefined ? rl.line : ''}`);
+        if (rl) process.stdout.cursorTo(rl.line.length + 2);
+    })
 
-        process.stdout.write(`\x1b[34m> \x1b[0m${rl.line}`);
-        process.stdout.cursorTo(rl.line.length + 2);
+    ws.on('close', () => {
+
+        sentHandshake = false;
+
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
+        process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client disconnected\x1b[0m\n`);
     })
 });
 
@@ -33,10 +76,19 @@ const clientConnect = async () => {
 
         const client = new WebSocket(target);
 
-        client.on('error', () => { })
+        client.on('error', ()=>{})
         client.on('open', () => {
-            console.log('Connected to target');
             connected = true;
+
+            const keyPair = generateRSAKeyPair();
+            privateKey = keyPair.privateKey;
+            publicKey = keyPair.publicKey;
+
+            client.send(publicKey);
+
+            process.stdout.clearLine(0);
+            process.stdout.cursorTo(0);
+            process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Connected to client\x1b[0m\n\n`);
 
             rl = readline.createInterface({
                 input: process.stdin,
@@ -45,32 +97,22 @@ const clientConnect = async () => {
             });
 
             rl.on('line', (line) => {
-                const msg = line.trim();
-            
-                // Send the message
-                client.send(msg);
 
-                process.stdout.write('\r')
-            
-                process.stdout.clearLine(0);
-                process.stdout.cursorTo(0);
-
-                // Write the new prompt
+                client.send(encryptRSA(targetPublicKey, line.trim().toString()));
                 process.stdout.write(`\x1b[34m> \x1b[0m`);
                 process.stdout.cursorTo(2);
             });
 
             process.stdout.write(`\x1b[A\x1b[34m> \x1b[0m`);
             process.stdout.cursorTo(2);
-            //rl.prompt();
 
             client.on('close', () => {
-                console.log('Connection closed');
                 connected = false;
+                if (rl) rl.close();
 
-                if (rl) {
-                    rl.close();
-                }
+                process.stdout.clearLine(0);
+                process.stdout.cursorTo(0);
+                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Connection closed\x1b[0m\n`);
 
                 return clientConnect();
             })
