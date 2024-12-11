@@ -14,15 +14,8 @@ export function params(argv: string[]): { target: string | null, port: string | 
     return { target, port };
 }
 
+import moment from 'moment';
 
 export function getCurrentTime(): string {
-    const now = new Date();
-    let hours = now.getHours();
-    let minutes = now.getMinutes();
-
-    // Pad hours and minutes with leading zeros if necessary
-    const formattedHours = hours < 10 ? `0${hours}` : `${hours}`;
-    const formattedMinutes = minutes < 10 ? `0${minutes}` : `${minutes}`;
-
-    return `${formattedHours}:${formattedMinutes}`;
+    return moment().format('YYYY-MM-DD HH:mm:ss')
 }

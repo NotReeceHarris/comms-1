@@ -11,12 +11,37 @@ export function encryptRSA(publicKey: string, plaintext: string) {
 
 // Helper function to decrypt with RSA (private key)
 export function decryptRSA(privateKey: string, encrypted: string) {
-    return crypto.privateDecrypt({
-        key: privateKey,
-        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-        oaepHash: "sha512",
-    }, Buffer.from(encrypted, 'base64')).toString();
+    try {
+        return crypto.privateDecrypt({
+            key: privateKey,
+            padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+            oaepHash: "sha512",
+        }, Buffer.from(encrypted, 'base64')).toString();
+    } catch (error) {
+        return undefined;
+    }
 }
+
+export function encryptAes(plaintext: string, key: Buffer, iv: Buffer): string {
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    
+    // Encrypt the plaintext
+    let encrypted = cipher.update(plaintext, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+
+    return encrypted;
+}
+
+export function decryptAes(encryptedText: string, key: Buffer, iv: Buffer): string {
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+
+    // Decrypt the encrypted text
+    let decrypted = decipher.update(encryptedText, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+
+    return decrypted;
+}
+
 
 export function generateRSAKeyPair() {
     // Generate a new RSA key pair
@@ -33,4 +58,11 @@ export function generateRSAKeyPair() {
     });
 
     return { publicKey, privateKey };
+}
+
+export function generateAesKey() {
+    return {
+        key: crypto.randomBytes(32),
+        iv: crypto.randomBytes(16)
+    }
 }
