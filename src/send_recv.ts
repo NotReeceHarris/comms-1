@@ -1,4 +1,4 @@
-import { deriveKey, encryptAes, decryptAes } from './encryption';
+import { deriveKey, encryptAes, decryptAes, encryptRSA, decryptRSA } from './encryption';
 import crypto, { hash } from 'crypto';
 
 const MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -23,6 +23,8 @@ export async function send(data: string, encryptionDetails: any) {
             message: message,
             timestamp: new Date().toISOString,
         });
+
+        payload = encryptRSA(encryptionDetails.targetPublicKey, payload);
     
         if ((payload.length + delimiter.length) > MESSAGE_SIZE) {
             console.error('Message too large');
@@ -61,7 +63,14 @@ export async function recv(data: string, encryptionDetails: any) {
         const endDelimiterPos = frontTrimmedData.indexOf(delimiter);
         const finalData = frontTrimmedData.slice(0, endDelimiterPos);
 
-        let payload = JSON.parse(finalData.toString());
+        let encryptedPayload = decryptRSA(encryptionDetails.privateKey, finalData.toString());
+
+        if (encryptedPayload === undefined) {
+            return 'Error decrypting message';
+        }
+
+        const payload = JSON.parse(encryptedPayload);
+
         return payload.message
     } catch (error) {
         console.log(error)
