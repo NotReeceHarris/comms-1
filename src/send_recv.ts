@@ -1,12 +1,9 @@
 import { deriveKey, encryptAes, decryptAes } from './encryption';
 import crypto, { hash } from 'crypto';
 
-const MESSAGE_SIZE = 15 * 1024 * 1024; // 5MB
+const MESSAGE_SIZE = 8 * 1024 * 1024; // 8MB
 
 let publicKey: string | undefined = undefined;
-
-let ourCodes: string | undefined = undefined;
-let theirCodes: string[] = [];
 
 export async function send(data: string, encryptionDetails: any) {
 
@@ -17,24 +14,15 @@ export async function send(data: string, encryptionDetails: any) {
 
         if (publicKey !== encryptionDetails.targetPublicKey) {
             publicKey = encryptionDetails.targetPublicKey;
-            ourCodes = undefined;
-            theirCodes = [];
         }
 
         const message = data.trim().toString()
         const delimiter = encryptionDetails.targetDelimiter;
     
-        const ourProposedCode = crypto.randomBytes(255).toString('hex');
         let payload = JSON.stringify({
             message: message,
             timestamp: new Date().toISOString,
-            code: ourProposedCode
         });
-        
-        if (theirCodes.length !== 0) {
-            const derivedKey = await deriveKey(theirCodes[theirCodes.length-1], encryptionDetails.ourAesIv);
-            payload = encryptAes(payload, derivedKey, encryptionDetails.targetAesIv);
-        }
     
         if ((payload.length + delimiter.length) > MESSAGE_SIZE) {
             console.error('Message too large');
@@ -51,7 +39,6 @@ export async function send(data: string, encryptionDetails: any) {
         const encodedData = rawData.toString('base64');
         const encrypted = encryptAes(encodedData, encryptionDetails.targetAesKey, encryptionDetails.targetAesIv)
         
-        ourCodes = ourProposedCode;
         return encrypted;
     } catch (error) {
         return;
@@ -74,21 +61,7 @@ export async function recv(data: string, encryptionDetails: any) {
         const endDelimiterPos = frontTrimmedData.indexOf(delimiter);
         const finalData = frontTrimmedData.slice(0, endDelimiterPos);
 
-        let payload;
-
-        if (!ourCodes) {
-            payload = JSON.parse(finalData.toString());
-        } else {
-            try {
-                const derivedKey = await deriveKey(ourCodes, encryptionDetails.targetAesIv);
-                const decryptedPayload = decryptAes(finalData.toString(), derivedKey, encryptionDetails.ourAesIv);
-                payload = JSON.parse(decryptedPayload);
-            } catch (error) {
-                console.log('They have encrypted with a dynamic code we don\'t have.');
-            }
-        }
-
-        theirCodes.push(payload.code);
+        let payload = JSON.parse(finalData.toString());
         return payload.message
     } catch (error) {
         console.log(error)
