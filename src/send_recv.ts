@@ -1,7 +1,7 @@
 import { deriveKey, encryptAes, decryptAes } from './encryption';
 import crypto, { hash } from 'crypto';
 
-const MESSAGE_SIZE = 8 * 1024 * 1024; // 8MB
+const MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB
 
 let publicKey: string | undefined = undefined;
 
