@@ -23,3 +23,5 @@ npx ts-node src/index.ts --target localhost:8001 --port 8002 --codeword brownFox
 ## TODO
 
 - [ ] Update diagram to reflect new encryption layer
+- [ ] Very buggy, only works consistently on localhost.
+- [ ] Native NGROK support
