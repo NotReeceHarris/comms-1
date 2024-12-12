@@ -66,3 +66,18 @@ export function generateAesKey() {
         iv: crypto.randomBytes(16)
     }
 }
+
+export function deriveKey(randomString: string, iv: Buffer): Promise<Buffer> {
+    // Define the key length based on the desired AES key size (e.g., 32 bytes for AES-256)
+    const keyLength = 32; 
+    // Use the IV as salt for scrypt. Note: Typically, salt should be unique for each key derivation,
+    // but here we're using IV for demonstration. In practice, you might want a separate salt.
+    const salt = iv;
+
+    return new Promise((resolve, reject) => {
+        crypto.scrypt(randomString, salt, keyLength, (err, derivedKey) => {
+            if (err) reject(err);
+            else resolve(derivedKey);
+        });
+    });
+}

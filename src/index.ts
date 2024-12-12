@@ -1,39 +1,49 @@
 import WebSocket, { WebSocketServer } from 'ws';
-import { params, getCurrentTime } from './lib';
-import { decryptRSA, encryptRSA, generateRSAKeyPair, generateAesKey } from './encryption';
+import { params, getCurrentTime, write } from './lib';
+import { generateRSAKeyPair, generateAesKey, encryptRSA, decryptRSA } from './encryption';
 import { send, recv } from './send_recv';
 import * as readline from 'readline';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 
-const { target, port } = params(process.argv);
+const { target, port, codeword } = params(process.argv);
 
-if (!target || !port) {
-    console.error('Usage: node src/index.ts --target <target> --port <port>');
+if (!target || !port || !codeword) {
+    console.error('Usage: node src/index.ts --target <target> --port <port> --codeword <codeword>');
     process.exit(1);
 }
 
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.setEncoding('utf8');
+
 const server = new WebSocketServer({ port: parseInt(port) });
 
-let serverWs: WebSocket;
+let serverWs: WebSocket | undefined;
 let client: WebSocket;
-let rl: readline.Interface;
+let rl: readline.Interface | undefined;
 
 let encryptionDetails: {
     privateKey: string | undefined
     publicKey: string | undefined,
     targetPublicKey: string | undefined,
     ourAesKey: Buffer | undefined,
-    ourAesIV: Buffer | undefined,
-    thereAesKey: Buffer | undefined,
-    thereAesIV: Buffer | undefined,
+    ourAesIv: Buffer | undefined,
+    ourDelimiter: Buffer | undefined
+    targetAesKey: Buffer | undefined,
+    targetAesIv: Buffer | undefined,
+    targetDelimiter: Buffer | undefined,
+    targetCodeword: string | undefined
 } = {
     privateKey: undefined,
     publicKey: undefined,
     targetPublicKey: undefined,
     ourAesKey: undefined,
-    ourAesIV: undefined,
-    thereAesKey: undefined,
-    thereAesIV: undefined,
+    ourAesIv: undefined,
+    ourDelimiter: undefined,
+    targetAesKey: undefined,
+    targetAesIv: undefined,
+    targetDelimiter: undefined,
+    targetCodeword: undefined
 }
 
 const isEstablished = () => {
@@ -41,14 +51,28 @@ const isEstablished = () => {
     if (!serverWs || !client) return;
     if (serverWs.readyState !== WebSocket.OPEN  || client.readyState !== WebSocket.OPEN ) return;
     if (encryptionDetails.targetPublicKey === undefined) return;
-    if (encryptionDetails.ourAesKey === undefined && encryptionDetails.ourAesIV === undefined) return;
-    if (encryptionDetails.thereAesKey === undefined && encryptionDetails.thereAesIV === undefined) return;
 
-    process.stdout.write(`──────────────────────────
-                        \rConnection established
-                        \rtarget: ${target}
-                        \rfingerprint: ${createHash('md5').update(encryptionDetails.targetPublicKey).digest('hex')}
-                        \r──────────────────────────\n`);
+    if (encryptionDetails.targetAesKey === undefined || encryptionDetails.targetAesIv === undefined) {
+        if (encryptionDetails.ourAesKey === undefined || encryptionDetails.ourAesIv === undefined || encryptionDetails.ourDelimiter === undefined) {
+            const {key, iv} = generateAesKey();
+            encryptionDetails.ourAesKey = key;
+            encryptionDetails.ourAesIv = iv;
+            encryptionDetails.ourDelimiter = randomBytes(6);
+        }
+
+        const codewordHash = createHash('sha256').update(codeword).digest('hex');
+        const encrypted = encryptRSA(encryptionDetails.targetPublicKey, `${encryptionDetails.ourAesKey.toString('base64')}:${encryptionDetails.ourAesIv.toString('base64')}:${encryptionDetails.ourDelimiter.toString('base64')}:${Buffer.from(codewordHash).toString('base64')}`);
+        client.send(encrypted);
+        return;
+    };
+    
+    const codewordHash = createHash('sha256').update(codeword).digest('hex');
+
+    write(`──────────────────────────
+    \rConnection established
+    \rtarget: ${target}
+    \rcodewords: ${encryptionDetails.targetCodeword === codewordHash ? '\x1b[32mMatching\x1b[0m' : '\x1b[31mClashing\x1b[0m'}
+    \r──────────────────────────\n`);
     
     rl = readline.createInterface({
         input: process.stdin,
@@ -57,21 +81,30 @@ const isEstablished = () => {
     });
 
     rl.on('line', async (line) => {
-        const encrypted = await send(line, encryptionDetails);
+        
+        const message = line.trim();
 
-        if (!encrypted) {
-            process.stdout.write(`\r\x1b[31m> \x1b[0m`);
+        if (message === '') {
+            write(`\r\x1b[31m> \x1b[0m`);
             process.stdout.cursorTo(2);
             return;
         }
 
-        client.send(encrypted);
-        process.stdout.write(`\r\x1b[34m> \x1b[0m`);
+        const encrypted = await send(message, encryptionDetails);
+
+        if (!encrypted) {
+            write(`\r\x1b[31m> \x1b[0m`);
+            process.stdout.cursorTo(2);
+            return;
+        }
+
+        if (client) client.send(encrypted);
+        write(`\r\x1b[34m> \x1b[0m`);
         process.stdout.cursorTo(2);
     });
 
     if (rl) {
-        process.stdout.write(`\n\x1b[A\x1b[34m> \x1b[0m`);
+        write(`\n\x1b[A\x1b[34m> \x1b[0m`);
         process.stdout.cursorTo(2);
     }
     
@@ -83,59 +116,50 @@ server.on('error', ()=>{});
 server.on('connection', (ws) => {
 
     serverWs = ws;
-    process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client connected\x1b[0m\n`);
+    write(`\x1b[31m[${getCurrentTime()}] Alert > Client connected\x1b[0m\n`)
 
     ws.on('message', async (message) => {
 
-        if (client.readyState === WebSocket.OPEN 
-            && encryptionDetails.targetPublicKey === undefined 
-            && message.toString().startsWith('-----BEGIN PUBLIC KEY-----')) {
+        if (encryptionDetails.targetPublicKey === undefined && message.toString().startsWith('-----BEGIN PUBLIC KEY-----')) {
             encryptionDetails.targetPublicKey = message.toString();
-                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client Sent Public Key\x1b[0m\n`);
-                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Sending AES Details\x1b[0m\n`);
-
-                const aesKeys = generateAesKey();
-                encryptionDetails.ourAesKey = aesKeys.key;
-                encryptionDetails.ourAesIV = aesKeys.iv;
-
-                client.send(encryptRSA(encryptionDetails.targetPublicKey, JSON.stringify({
-                    key: encryptionDetails.ourAesKey.toString('base64'),
-                    iv: encryptionDetails.ourAesIV.toString('base64')
-                })));
-
-                return isEstablished();
+            write(`\x1b[31m[${getCurrentTime()}] Alert > Client Sent Public Key\x1b[0m\n`)
+            return isEstablished();
         }
 
-        if (encryptionDetails.privateKey !== undefined
-            && encryptionDetails.targetPublicKey !== undefined
-            && encryptionDetails.ourAesKey !== undefined && encryptionDetails.ourAesIV !== undefined
-            && encryptionDetails.thereAesKey === undefined && encryptionDetails.thereAesIV === undefined)  {
+        if (encryptionDetails.privateKey !== undefined &&
+            encryptionDetails.targetAesKey === undefined && encryptionDetails.targetAesIv === undefined) {
+            const decrypted = decryptRSA(encryptionDetails.privateKey, message.toString());
+            if (decrypted === undefined) {
+                write(`\x1b[31m[${getCurrentTime()}] Alert > Error decrypting AES Key and IV\x1b[0m\n`);
+                return;
+            }
 
-                try {
-                    const decrypted = decryptRSA(encryptionDetails.privateKey, message.toString());
-                    console.log(decrypted);
-                    //process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client Send There AES Keys\x1b[0m\n`);
-                } catch (error) {
-                    return
-                }
+            const [key, iv, delimiter, targetCodeword] = decrypted.split(':').map((x) => Buffer.from(x, 'base64'));
 
+            encryptionDetails.targetAesKey = key;
+            encryptionDetails.targetAesIv = iv;
+            encryptionDetails.targetDelimiter = delimiter;
+            encryptionDetails.targetCodeword = targetCodeword.toString();
+
+            write(`\x1b[31m[${getCurrentTime()}] Alert > AES Key and IV received from client\x1b[0m\n`);
+            return isEstablished();
         }
 
-        if (
-            encryptionDetails.thereAesKey === undefined && encryptionDetails.thereAesIV === undefined
-        ) {
-            return
-        }
-
-        process.stdout.clearLine(0);
-        process.stdout.cursorTo(0);
-        process.stdout.write(`\x1b[32m[${getCurrentTime()}] Alice > \x1b[0m${await recv(message.toString(), encryptionDetails)}\n\x1b[34m> \x1b[0m${rl !== undefined ? rl.line : ''}`);
+        write(`\x1b[32m[${getCurrentTime()}] Them > \x1b[0m${await recv(message.toString(), encryptionDetails)}\n\x1b[34m> \x1b[0m${rl !== undefined ? rl.line : ''}`, true)
         if (rl) process.stdout.cursorTo(rl.line.length + 2);
     })
 
     ws.on('close', () => {
         encryptionDetails.targetPublicKey = undefined;
-        process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Client disconnected\x1b[0m\n`);
+        encryptionDetails.targetAesKey = undefined;
+        encryptionDetails.targetAesIv = undefined;
+        encryptionDetails.ourAesKey = undefined;
+        encryptionDetails.ourAesIv = undefined;
+        encryptionDetails.ourDelimiter = undefined;
+        encryptionDetails.targetCodeword = undefined;
+        if (client) client.terminate();
+        serverWs = undefined;
+        write(`\x1b[31m[${getCurrentTime()}] Alert > Client disconnected\x1b[0m\n`, true);
     })
 });
 
@@ -147,33 +171,33 @@ const clientConnect = async () => {
         client = new WebSocket(target);
         client.on('error', ()=>{})
         client.on('open', () => {
-            connected = true;
 
-            const keyPair = generateRSAKeyPair();
-            encryptionDetails.privateKey = keyPair.privateKey;
-            encryptionDetails.publicKey = keyPair.publicKey;
+            connected = true;
+            write(`\x1b[31m[${getCurrentTime()}] Alert > Connected to client\x1b[0m\n`);
+
+            const {privateKey, publicKey} = generateRSAKeyPair();
+            encryptionDetails.privateKey = privateKey;
+            encryptionDetails.publicKey = publicKey;
 
             if (client.readyState === WebSocket.OPEN) {
-                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Sending Public Key to client\x1b[0m\n`);
+                write(`\x1b[31m[${getCurrentTime()}] Alert > Sending Public Key to client\x1b[0m\n`);
                 client.send(encryptionDetails.publicKey);
             } else {
-                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Failed to send public key to client\x1b[0m\n`);
+                write(`\x1b[31m[${getCurrentTime()}] Alert > Failed to send public key to client\x1b[0m\n`);
             }
             
-            process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Connected to client\x1b[0m\n`);
             isEstablished();
 
             client.on('close', () => {
                 connected = false;
                 if (rl) rl.close();
-                process.stdout.clearLine(0);
-                process.stdout.cursorTo(0);
-                process.stdout.write(`\x1b[31m[${getCurrentTime()}] Alert > Connection closed\x1b[0m\n`);
+                write(`\x1b[31m[${getCurrentTime()}] Alert > Connection closed\x1b[0m\n`, true);
                 return clientConnect();
             })
         });
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500));
+
     }
 }
 
